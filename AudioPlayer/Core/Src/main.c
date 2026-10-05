@@ -49,7 +49,7 @@ TaskHandle_t ButtonTaskHandle;
 TaskHandle_t VolumeTaskHandle;
 SemaphoreHandle_t lcdMutexHandle;
 /* USER CODE BEGIN PV */
-
+UART_HandleTypeDef huart1;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -60,7 +60,7 @@ void StartButtonTask(void *argument);
 void StartVolumeTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+static void MX_USART1_UART_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -98,7 +98,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   /* USER CODE BEGIN 2 */
-
+  MX_USART1_UART_Init();
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -206,7 +206,34 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static void MX_USART1_UART_Init(void)
+{
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
 
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_USART1_CLK_ENABLE();
+
+    GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
+    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+    huart1.Instance = USART1;
+    huart1.Init.BaudRate = 115200;
+    huart1.Init.WordLength = UART_WORDLENGTH_8B;
+    huart1.Init.StopBits = UART_STOPBITS_1;
+    huart1.Init.Parity = UART_PARITY_NONE;
+    huart1.Init.Mode = UART_MODE_TX_RX;
+    huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+    huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+
+    if (HAL_UART_Init(&huart1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDisplayTask */
@@ -218,13 +245,19 @@ static void MX_GPIO_Init(void)
 /* USER CODE END Header_StartDisplayTask */
 void StartDisplayTask(void *argument)
 {
-  /* USER CODE BEGIN 5 */
-  /* Infinite loop */
-  for(;;)
-  {
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-  /* USER CODE END 5 */
+    /* USER CODE BEGIN 5 */
+    const char message[] = "AudioPlayer: DisplayTask running\r\n";
+
+    for (;;)
+    {
+        HAL_UART_Transmit(&huart1,
+                         (uint8_t *)message,
+                         sizeof(message) - 1,
+                         100);
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+    /* USER CODE END 5 */
 }
 
 /* USER CODE BEGIN Header_StartButtonTask */
