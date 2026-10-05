@@ -18,7 +18,9 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "cmsis_os.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -42,31 +44,10 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* Definitions for DisplayTask */
-osThreadId_t DisplayTaskHandle;
-const osThreadAttr_t DisplayTask_attributes = {
-  .name = "DisplayTask",
-  .stack_size = 512 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
-/* Definitions for ButtonTask */
-osThreadId_t ButtonTaskHandle;
-const osThreadAttr_t ButtonTask_attributes = {
-  .name = "ButtonTask",
-  .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
-/* Definitions for VolumeTask */
-osThreadId_t VolumeTaskHandle;
-const osThreadAttr_t VolumeTask_attributes = {
-  .name = "VolumeTask",
-  .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
-};
-/* Definitions for lcdMutex */
-osMutexId_t lcdMutexHandle;
-const osMutexAttr_t lcdMutex_attributes = {
-  .name = "lcdMutex"
-};
+TaskHandle_t DisplayTaskHandle;
+TaskHandle_t ButtonTaskHandle;
+TaskHandle_t VolumeTaskHandle;
+SemaphoreHandle_t lcdMutexHandle;
 /* USER CODE BEGIN PV */
 
 /* USER CODE END PV */
@@ -121,47 +102,35 @@ int main(void)
   /* USER CODE END 2 */
 
   /* Init scheduler */
-  osKernelInitialize();
-  /* Create the mutex(es) */
-  /* creation of lcdMutex */
-  lcdMutexHandle = osMutexNew(&lcdMutex_attributes);
+ lcdMutexHandle = xSemaphoreCreateMutex();
 
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
-  /* USER CODE END RTOS_MUTEX */
+if (lcdMutexHandle == NULL)
+{
+    Error_Handler();
+}
 
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
-  /* USER CODE END RTOS_SEMAPHORES */
+if (xTaskCreate(StartDisplayTask, "DisplayTask", 512,
+                NULL, 1, &DisplayTaskHandle) != pdPASS)
+{
+    Error_Handler();
+}
 
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
-  /* USER CODE END RTOS_TIMERS */
+if (xTaskCreate(StartButtonTask, "ButtonTask", 256,
+                NULL, 1, &ButtonTaskHandle) != pdPASS)
+{
+    Error_Handler();
+}
 
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
-  /* USER CODE END RTOS_QUEUES */
+if (xTaskCreate(StartVolumeTask, "VolumeTask", 256,
+                NULL, 1, &VolumeTaskHandle) != pdPASS)
+{
+    Error_Handler();
+}
 
-  /* Create the thread(s) */
-  /* creation of DisplayTask */
-  DisplayTaskHandle = osThreadNew(StartDisplayTask, NULL, &DisplayTask_attributes);
+vTaskStartScheduler();
 
-  /* creation of ButtonTask */
-  ButtonTaskHandle = osThreadNew(StartButtonTask, NULL, &ButtonTask_attributes);
-
-  /* creation of VolumeTask */
-  VolumeTaskHandle = osThreadNew(StartVolumeTask, NULL, &VolumeTask_attributes);
-
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  /* USER CODE END RTOS_THREADS */
-
-  /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
-
-  /* Start scheduler */
-  osKernelStart();
+/* Reaching here means the scheduler could not start. */
+Error_Handler();
 
   /* We should never get here as control is now taken by the scheduler */
 
@@ -253,7 +222,7 @@ void StartDisplayTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
   /* USER CODE END 5 */
 }
@@ -271,7 +240,7 @@ void StartButtonTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
   /* USER CODE END StartButtonTask */
 }
@@ -289,7 +258,7 @@ void StartVolumeTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
   /* USER CODE END StartVolumeTask */
 }
