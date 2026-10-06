@@ -1,5 +1,5 @@
 /*
- * Spark-1 ES8388 audio bring-up.
+ * Spark-1 ES8388 melody player with TIM7 note ticker and I2S DMA.
  * Codec register sequence adapted from the supplied RT-Thread driver.
  * Copyright (c) 2006-2021, RT-Thread Development Team
  * SPDX-License-Identifier: Apache-2.0
@@ -13,20 +13,26 @@
 
 static I2S_HandleTypeDef audioI2S;
 static DMA_HandleTypeDef audioDMA;
-static uint16_t samples[512]; /* 256 stereo frames; two 16 ms halves. */
+static uint16_t samples[128]; /* 64 stereo frames: two 4 ms halves. */
+static TIM_HandleTypeDef noteTimer;
+static uint32_t noteMilliseconds[176];
+static volatile uint32_t noteTicks;
+#define HALF_FRAMES 32U
 static uint32_t increments[176], durations[176];
 static volatile uint8_t playing, audioFailed;
+static volatile uint8_t paused = 0;
 static volatile uint16_t amplitude = 2048;
-static uint16_t noteCount, noteIndex;
-static uint32_t phase, elapsed;
+static uint16_t noteCount;
+static volatile uint16_t noteIndex;
+static volatile uint32_t phase, elapsed;
 static uint8_t initialized;
 
 static void fill_half(uint16_t *destination)
 {
-    for (unsigned frame = 0; frame < 128; ++frame)
+    for (unsigned frame = 0; frame < HALF_FRAMES; ++frame)
     {
         int32_t value = 0;
-        if (playing && !audioFailed && noteIndex < noteCount)
+        if (playing && !paused && !audioFailed && noteIndex < noteCount)
         {
             uint32_t duration = durations[noteIndex];
             uint32_t increment = increments[noteIndex];
@@ -45,15 +51,67 @@ static void fill_half(uint16_t *destination)
                 value = value * (int32_t)envelope / 32;
                 phase += increment;
             }
-            if (++elapsed >= duration)
-            {
-                elapsed = phase = 0;
-                if (++noteIndex >= noteCount) playing = 0;
-            }
+            /* DMA generates samples; TIM7 decides when notes change. */
+            if (elapsed < duration) ++elapsed;
         }
         destination[2U * frame] = (uint16_t)(int16_t)value;
         destination[2U * frame + 1U] = (uint16_t)(int16_t)value;
     }
+}
+
+/* Recurring note ticker: one callback every millisecond.
+ * No LCD, I2C, delays, floating point or RTOS calls in this callback. */
+static void advance_note_tick(void)
+{
+    if (!playing || paused || audioFailed || noteIndex >= noteCount) return;
+
+    if (++noteTicks >= noteMilliseconds[noteIndex])
+    {
+        /* DMA has higher interrupt priority. Protect the short transition
+         * so its callback cannot observe a partly updated note. */
+        uint32_t interruptMask = __get_PRIMASK();
+        __disable_irq();
+        noteTicks = 0;
+        elapsed = phase = 0;
+        ++noteIndex;
+        if (noteIndex >= noteCount) playing = 0;
+        __DMB();
+        __set_PRIMASK(interruptMask);
+    }
+}
+
+void TIM7_IRQHandler(void)
+{
+    if (__HAL_TIM_GET_FLAG(&noteTimer, TIM_FLAG_UPDATE) != RESET &&
+        __HAL_TIM_GET_IT_SOURCE(&noteTimer, TIM_IT_UPDATE) != RESET)
+    {
+        __HAL_TIM_CLEAR_IT(&noteTimer, TIM_IT_UPDATE);
+        advance_note_tick();
+    }
+}
+
+static HAL_StatusTypeDef start_note_ticker(void)
+{
+    __HAL_RCC_TIM7_CLK_ENABLE();
+    uint32_t timerClock = HAL_RCC_GetPCLK1Freq();
+    if ((RCC->CFGR & RCC_CFGR_PPRE1) != 0U) timerClock *= 2U;
+    if (timerClock < 1000000U || timerClock % 1000000U != 0U)
+        return HAL_ERROR;
+
+    noteTimer.Instance = TIM7;
+    noteTimer.Init.Prescaler = timerClock / 1000000U - 1U;
+    noteTimer.Init.CounterMode = TIM_COUNTERMODE_UP;
+    noteTimer.Init.Period = 1000U - 1U; /* 1 MHz / 1000 = 1 kHz. */
+    noteTimer.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+    noteTimer.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+    if (HAL_TIM_Base_Init(&noteTimer) != HAL_OK) return HAL_ERROR;
+    __HAL_TIM_CLEAR_IT(&noteTimer, TIM_IT_UPDATE);
+    HAL_NVIC_SetPriority(TIM7_IRQn, 7, 0);
+    HAL_NVIC_ClearPendingIRQ(TIM7_IRQn);
+    HAL_NVIC_EnableIRQ(TIM7_IRQn);
+    HAL_StatusTypeDef result = HAL_TIM_Base_Start_IT(&noteTimer);
+    if (result != HAL_OK) HAL_NVIC_DisableIRQ(TIM7_IRQn);
+    return result;
 }
 
 void DMA1_Stream7_IRQHandler(void) { HAL_DMA_IRQHandler(&audioDMA); }
@@ -63,7 +121,7 @@ void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *handle)
 }
 void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *handle)
 {
-    if (handle == &audioI2S) fill_half(samples + 256);
+    if (handle == &audioI2S) fill_half(samples + 64);
 }
 void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *handle)
 {
@@ -75,7 +133,23 @@ void SparkAudio_SetVolume(uint8_t percent)
     if (percent > 100U) percent = 100U;
     amplitude = (uint16_t)(32767U * percent / 100U);
 }
-uint8_t SparkAudio_IsPlaying(void) { return playing; }
+uint8_t SparkAudio_IsPlaying(void)
+{
+    return playing && !paused;
+}
+
+uint8_t SparkAudio_IsPaused(void)
+{
+    return playing && paused;
+}
+
+void SparkAudio_TogglePause(void)
+{
+    if (playing && !audioFailed)
+    {
+        paused = !paused;
+    }
+}
 uint8_t SparkAudio_HasError(void) { return audioFailed; }
 
 
@@ -215,11 +289,17 @@ HAL_StatusTypeDef SparkAudio_Init(I2C_HandleTypeDef *codecBus)
     HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 6, 0);
     HAL_NVIC_EnableIRQ(DMA1_Stream7_IRQn);
     memset(samples, 0, sizeof(samples));
-    if (HAL_I2S_Transmit_DMA(&audioI2S, samples, 512) != HAL_OK)
+    if (HAL_I2S_Transmit_DMA(&audioI2S, samples, 128) != HAL_OK)
         return HAL_ERROR;
     HAL_Delay(100); /* Only called before the scheduler starts. */
     if (codec_write(codecBus, 0x19, 0x00) != HAL_OK)
     {
+        HAL_I2S_DMAStop(&audioI2S);
+        return HAL_ERROR;
+    }
+    if (start_note_ticker() != HAL_OK)
+    {
+        codec_write(codecBus, 0x19, 0x04);
         HAL_I2S_DMAStop(&audioI2S);
         return HAL_ERROR;
     }
@@ -246,13 +326,16 @@ HAL_StatusTypeDef SparkAudio_PlaySong(uint8_t index)
          * a different interpretation of tempo. */
         float count = song.beats[i] * song.tempo * 8.0f * 8000.0f;
         durations[i] = count >= 80.0f ? (uint32_t)(count + 0.5f) : 80U;
+        noteMilliseconds[i] = (durations[i] + 7U) / 8U;
     }
-    HAL_NVIC_DisableIRQ(DMA1_Stream7_IRQn);
+    uint32_t interruptMask = __get_PRIMASK();
+    __disable_irq();
     noteCount = song.length;
+    paused = 0;
     noteIndex = 0;
-    elapsed = phase = 0;
+    elapsed = phase = noteTicks = 0;
     __DMB();
     playing = 1;
-    HAL_NVIC_EnableIRQ(DMA1_Stream7_IRQn);
+    __set_PRIMASK(interruptMask);
     return HAL_OK;
 }
