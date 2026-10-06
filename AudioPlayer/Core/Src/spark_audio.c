@@ -6,11 +6,78 @@
  */
 
 #include "spark_audio.h"
+#include "spark_songs.h"
+#include <string.h>
 
 #define CODEC_ADDRESS (0x10U << 1)
 
 static I2S_HandleTypeDef audioI2S;
-static uint16_t tone[64];
+static DMA_HandleTypeDef audioDMA;
+static uint16_t samples[512]; /* 256 stereo frames; two 16 ms halves. */
+static uint32_t increments[176], durations[176];
+static volatile uint8_t playing, audioFailed;
+static volatile uint16_t amplitude = 2048;
+static uint16_t noteCount, noteIndex;
+static uint32_t phase, elapsed;
+static uint8_t initialized;
+
+static void fill_half(uint16_t *destination)
+{
+    for (unsigned frame = 0; frame < 128; ++frame)
+    {
+        int32_t value = 0;
+        if (playing && !audioFailed && noteIndex < noteCount)
+        {
+            uint32_t duration = durations[noteIndex];
+            uint32_t increment = increments[noteIndex];
+            if (increment && elapsed < duration - duration / 10U)
+            {
+                uint32_t position = phase >> 16;
+                int32_t triangle = position < 32768U
+                    ? (int32_t)position * 2 - 32768
+                    : 98303 - (int32_t)position * 2;
+                value = triangle * (int32_t)amplitude / 32768;
+                /* Short attack and release to reduce clicks. */
+                uint32_t sounding = duration - duration / 10U;
+                uint32_t envelope = elapsed < 32U ? elapsed : 32U;
+                if (sounding - elapsed < envelope)
+                    envelope = sounding - elapsed;
+                value = value * (int32_t)envelope / 32;
+                phase += increment;
+            }
+            if (++elapsed >= duration)
+            {
+                elapsed = phase = 0;
+                if (++noteIndex >= noteCount) playing = 0;
+            }
+        }
+        destination[2U * frame] = (uint16_t)(int16_t)value;
+        destination[2U * frame + 1U] = (uint16_t)(int16_t)value;
+    }
+}
+
+void DMA1_Stream7_IRQHandler(void) { HAL_DMA_IRQHandler(&audioDMA); }
+void HAL_I2S_TxHalfCpltCallback(I2S_HandleTypeDef *handle)
+{
+    if (handle == &audioI2S) fill_half(samples);
+}
+void HAL_I2S_TxCpltCallback(I2S_HandleTypeDef *handle)
+{
+    if (handle == &audioI2S) fill_half(samples + 256);
+}
+void HAL_I2S_ErrorCallback(I2S_HandleTypeDef *handle)
+{
+    if (handle == &audioI2S) { playing = 0; audioFailed = 1; }
+}
+
+void SparkAudio_SetVolume(uint8_t percent)
+{
+    if (percent > 100U) percent = 100U;
+    amplitude = (uint16_t)(32767U * percent / 100U);
+}
+uint8_t SparkAudio_IsPlaying(void) { return playing; }
+uint8_t SparkAudio_HasError(void) { return audioFailed; }
+
 
 static HAL_StatusTypeDef codec_write(
     I2C_HandleTypeDef *bus, uint8_t reg, uint8_t value)
@@ -84,7 +151,7 @@ static HAL_StatusTypeDef configure_i2s(void)
     return HAL_I2S_Init(&audioI2S);
 }
 
-HAL_StatusTypeDef SparkAudio_TestTone(I2C_HandleTypeDef *codecBus)
+HAL_StatusTypeDef SparkAudio_Init(I2C_HandleTypeDef *codecBus)
 {
     static const uint8_t settings[][2] = {
         {0x19, 0x04}, /* Mute DAC during setup. */
@@ -132,59 +199,60 @@ HAL_StatusTypeDef SparkAudio_TestTone(I2C_HandleTypeDef *codecBus)
         return HAL_ERROR;
     }
 
-    /* 32 stereo frames: a quiet 250 Hz triangle at 8 kHz. */
-    for (uint32_t i = 0; i < 32; i++)
-    {
-        int32_t sample;
-
-        if (i < 16)
-        {
-            sample = -4096 + (int32_t)i * 512;
-        }
-        else
-        {
-            sample = 4096 - (int32_t)(i - 16) * 512;
-        }
-
-        tone[2 * i] = (uint16_t)(int16_t)sample;
-        tone[2 * i + 1] = (uint16_t)(int16_t)sample;
-    }
-
-    /* Start clocks with a silent frame before unmuting. */
-    uint16_t silence[2] = {0, 0};
-
-    if (HAL_I2S_Transmit(&audioI2S, silence, 2, 100) != HAL_OK)
-    {
-        __HAL_I2S_DISABLE(&audioI2S);
+    __HAL_RCC_DMA1_CLK_ENABLE();
+    audioDMA.Instance = DMA1_Stream7;
+    audioDMA.Init.Channel = DMA_CHANNEL_0;
+    audioDMA.Init.Direction = DMA_MEMORY_TO_PERIPH;
+    audioDMA.Init.PeriphInc = DMA_PINC_DISABLE;
+    audioDMA.Init.MemInc = DMA_MINC_ENABLE;
+    audioDMA.Init.PeriphDataAlignment = DMA_PDATAALIGN_HALFWORD;
+    audioDMA.Init.MemDataAlignment = DMA_MDATAALIGN_HALFWORD;
+    audioDMA.Init.Mode = DMA_CIRCULAR;
+    audioDMA.Init.Priority = DMA_PRIORITY_HIGH;
+    audioDMA.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+    if (HAL_DMA_Init(&audioDMA) != HAL_OK) return HAL_ERROR;
+    __HAL_LINKDMA(&audioI2S, hdmatx, audioDMA);
+    HAL_NVIC_SetPriority(DMA1_Stream7_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(DMA1_Stream7_IRQn);
+    memset(samples, 0, sizeof(samples));
+    if (HAL_I2S_Transmit_DMA(&audioI2S, samples, 512) != HAL_OK)
         return HAL_ERROR;
-    }
-
-    HAL_Delay(100);
-
+    HAL_Delay(100); /* Only called before the scheduler starts. */
     if (codec_write(codecBus, 0x19, 0x00) != HAL_OK)
     {
-        __HAL_I2S_DISABLE(&audioI2S);
+        HAL_I2S_DMAStop(&audioI2S);
         return HAL_ERROR;
     }
+    initialized = 1;
+    return HAL_OK;
+}
 
-    HAL_StatusTypeDef result = HAL_OK;
+HAL_StatusTypeDef SparkAudio_PlaySong(uint8_t index)
+{
+    SparkSong song;
+    if (!initialized || audioFailed || !SparkSongs_Get(index, &song)
+        || !song.length || song.length > 176U || song.tempo <= 0.0f)
+        return HAL_ERROR;
 
-    /* Approximately one second; polling is only for this startup test. */
-    for (uint32_t block = 0; block < 250; block++)
+    /* The callback sees silence while the next melody is prepared. */
+    playing = 0;
+    for (uint16_t i = 0; i < song.length; ++i)
     {
-        result = HAL_I2S_Transmit(&audioI2S, tone, 64, 100);
-
-        if (result != HAL_OK)
-        {
-            break;
-        }
+        float period = song.notePeriods[i];
+        increments[i] = period > 0.0f
+            ? (uint32_t)(4294967296.0 / (8.0 * (double)period)) : 0U;
+        /* One supplied eighth-note beat (0.125) lasts tempo seconds.
+         * Change this factor if the lecturer's missing example uses
+         * a different interpretation of tempo. */
+        float count = song.beats[i] * song.tempo * 8.0f * 8000.0f;
+        durations[i] = count >= 80.0f ? (uint32_t)(count + 0.5f) : 80U;
     }
-
-    HAL_StatusTypeDef muteResult =
-        codec_write(codecBus, 0x19, 0x04);
-
-    HAL_I2S_Transmit(&audioI2S, silence, 2, 100);
-    __HAL_I2S_DISABLE(&audioI2S);
-
-    return result == HAL_OK ? muteResult : result;
+    HAL_NVIC_DisableIRQ(DMA1_Stream7_IRQn);
+    noteCount = song.length;
+    noteIndex = 0;
+    elapsed = phase = 0;
+    __DMB();
+    playing = 1;
+    HAL_NVIC_EnableIRQ(DMA1_Stream7_IRQn);
+    return HAL_OK;
 }

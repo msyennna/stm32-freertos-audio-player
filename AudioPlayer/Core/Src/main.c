@@ -6,6 +6,9 @@
 /* USER CODE BEGIN Includes */
 #include "spark_lcd.h"
 #include "spark_audio.h"
+#include "spark_songs.h"
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
@@ -20,6 +23,8 @@ TaskHandle_t ButtonTaskHandle;
 TaskHandle_t VolumeTaskHandle;
 SemaphoreHandle_t lcdMutexHandle;
 
+static volatile uint32_t playRequest = 0;
+static volatile uint8_t volumePercent = 50;
 static uint8_t currentSong = 0;
 static uint8_t pendingSong = 0;
 static volatile uint8_t selectionActive = 0;
@@ -60,7 +65,7 @@ codecDetected =
 
      if (codecDetected)
 {
-    audioTestResult = SparkAudio_TestTone(&hi2c2);
+    audioTestResult = SparkAudio_Init(&hi2c2);
 }
 /* USER CODE END 2 */
 
@@ -267,187 +272,105 @@ static void MX_I2C2_Init(void)
 }
 /* USER CODE END 4 */
 
+/* DisplayTask alone writes to the LCD and starts confirmed melodies. */
+static void lcd_line(uint16_t y, const char *text)
+{
+    char line[27];
+    memset(line, ' ', 26);
+    line[26] = 0;
+    size_t length = strlen(text);
+    if (length > 26) length = 26;
+    memcpy(line, text, length);
+    SparkLCD_Text(16, y, line, 0xFFFF, 0x0000);
+}
 void StartDisplayTask(void *argument)
 {
-    /* USER CODE BEGIN 5 */
     (void)argument;
-
     const char message[] =
-        "AudioPlayer: ready\r\n"
-        "B1: enter selection / confirm\r\n"
-        "Hold B2-B4 for binary song choice 1-8.\r\n"
-        "Confirm within 5 seconds.\r\n"
-        "Potentiometer: volume setting.\r\n";
-
-    if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
-    {
-        SparkLCD_Fill(0x0000);
-
-        SparkLCD_Text(16, 24, "STM32 AUDIO PLAYER",
-                      0xFFFF, 0x0000);
-
-        SparkLCD_Text(
-            16, 64,
-            codecDetected ? "Codec: detected" : "Codec: not detected",
-            codecDetected ? 0x07E0 : 0xF800,
-            0x0000);
-
-        SparkLCD_Text(
-            16, 88,
-            audioTestResult == HAL_OK
-                ? "Audio test: sent"
-                : "Audio test: failed",
-            audioTestResult == HAL_OK ? 0x07E0 : 0xF800,
-            0x0000);
-
-        SparkLCD_Text(16, 104, "Song: 1",
-                      0xFFFF, 0x0000);
-
-        SparkLCD_Text(16, 136, "Status: Ready",
-                      0xFFFF, 0x0000);
-
-        xSemaphoreGive(lcdMutexHandle);
-    }
-
-    HAL_UART_Transmit(&huart1,
-                      (uint8_t *)message,
-                      sizeof(message) - 1,
-                      100);
-
+        "Hold B2-B4 for binary song 1-8, then press B1.\r\n"
+        "Release all buttons; press B1 within 5 seconds to confirm.\r\n"
+        "Potentiometer controls playback volume.\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t *)message, sizeof(message)-1, 100);
+    uint32_t handledRequest = 0;
+    char oldLines[7][27] = {{0}};
+    const uint16_t rows[7] = {24, 56, 80, 104, 128, 160, 192};
     for (;;)
     {
-        uint8_t selecting = selectionActive;
-
+        if (handledRequest != playRequest)
+        {
+            handledRequest = playRequest;
+            audioTestResult = SparkAudio_PlaySong(currentSong);
+        }
+        uint8_t running = SparkAudio_IsPlaying();
+        uint8_t failed = audioTestResult != HAL_OK || SparkAudio_HasError();
+        SparkSong song;
+        SparkSongs_Get(currentSong, &song);
+        char lines[7][27] = {{0}};
+        snprintf(lines[0], 27, "STM32 AUDIO PLAYER");
+        snprintf(lines[1], 27, "%s", codecDetected ? "Codec: detected" : "Codec: not detected");
+        snprintf(lines[2], 27, "Song %u: %.17s", (unsigned)currentSong+1, song.title);
+        snprintf(lines[3], 27, "%.26s", song.subtitle);
+        snprintf(lines[4], 27, "Status: %s", failed ? "Audio error" :
+                 selectionActive ? "Confirm choice" : running ? "Playing" : "Ready");
+        snprintf(lines[5], 27, "Volume: %3u%%", (unsigned)volumePercent);
+        if (selectionActive)
+            snprintf(lines[6], 27, "Choice: %u - press B1", (unsigned)pendingSong+1);
+        if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
+        {
+            for (unsigned i=0; i<7; ++i)
+                if (strcmp(lines[i], oldLines[i]))
+                {
+                    lcd_line(rows[i], lines[i]);
+                    strcpy(oldLines[i], lines[i]);
+                }
+            xSemaphoreGive(lcdMutexHandle);
+        }
         HAL_GPIO_WritePin(GPIOF, GPIO_PIN_5,
-                          selecting ? GPIO_PIN_RESET : GPIO_PIN_SET);
-
+            !selectionActive && !running ? GPIO_PIN_SET : GPIO_PIN_RESET);
         HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6,
-                          selecting ? GPIO_PIN_SET : GPIO_PIN_RESET);
-
-        HAL_GPIO_WritePin(GPIOF, GPIO_PIN_7, GPIO_PIN_RESET);
-
+            selectionActive ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(GPIOF, GPIO_PIN_7,
+            !selectionActive && running ? GPIO_PIN_SET : GPIO_PIN_RESET);
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    /* USER CODE END 5 */
 }
 
 void StartButtonTask(void *argument)
 {
-    /* USER CODE BEGIN StartButtonTask */
     (void)argument;
-
-    uint8_t lastRaw = 0;
-    uint8_t stableButtons = 0;
-    uint8_t displayChanged = 1;
-
-    TickType_t lastChangeTick = xTaskGetTickCount();
-
+    uint8_t lastRaw = 0, stable = 0;
+    TickType_t changed = xTaskGetTickCount();
     for (;;)
     {
         TickType_t now = xTaskGetTickCount();
-        uint8_t rawButtons = 0;
-        uint32_t inputs = GPIOE->IDR;
-
-        /* Active-low buttons: pressed = 1. */
-        for (uint8_t i = 0; i < 4; i++)
-        {
-            if ((inputs & (GPIO_PIN_2 << i)) == 0)
-            {
-                rawButtons |= (uint8_t)(1U << i);
-            }
-        }
-
-        if (rawButtons != lastRaw)
-        {
-            lastRaw = rawButtons;
-            lastChangeTick = now;
-        }
-
-        /* Cancel an unconfirmed choice after five seconds. */
-        if (selectionActive &&
-            (TickType_t)(now - selectionStartTick) >=
-                pdMS_TO_TICKS(5000))
-        {
+        uint8_t raw = (uint8_t)((~GPIOE->IDR >> 2) & 15U);
+        if (raw != lastRaw) { lastRaw = raw; changed = now; }
+        if (selectionActive && now-selectionStartTick >= pdMS_TO_TICKS(5000))
             selectionActive = 0;
-            pendingSong = currentSong;
-            displayChanged = 1;
-        }
-
-        /* Accept changes after 40 ms of stable input. */
-        if (rawButtons != stableButtons &&
-            (TickType_t)(now - lastChangeTick) >=
-                pdMS_TO_TICKS(40))
+        if (raw != stable && now-changed >= pdMS_TO_TICKS(40))
         {
-            uint8_t newlyPressed =
-                (uint8_t)(rawButtons & (uint8_t)~stableButtons);
-
-            stableButtons = rawButtons;
-
-            if (newlyPressed & 0x01U)
+            uint8_t pressed = (uint8_t)(raw & ~stable);
+            stable = raw;
+            if (pressed & 1U)
             {
                 if (!selectionActive)
                 {
+                    /* Capture once: releasing the binary buttons must
+                     * not change the stored selection. */
+                    pendingSong = (stable >> 1) & 7U;
                     selectionStartTick = now;
-                    pendingSong =
-                        (uint8_t)((stableButtons >> 1) & 0x07U);
                     selectionActive = 1;
                 }
                 else
                 {
-                    pendingSong =
-                        (uint8_t)((stableButtons >> 1) & 0x07U);
-
                     currentSong = pendingSong;
                     selectionActive = 0;
+                    ++playRequest; /* Allows replay of the same song. */
                 }
-
-                displayChanged = 1;
-            }
-            else if (selectionActive)
-            {
-                pendingSong =
-                    (uint8_t)((stableButtons >> 1) & 0x07U);
-
-                displayChanged = 1;
             }
         }
-
-        if (displayChanged)
-        {
-            char songText[] = "Song: 1             ";
-            char choiceText[] = "Choice: 1           ";
-
-            songText[6] = (char)('1' + currentSong);
-            choiceText[8] = (char)('1' + pendingSong);
-
-            if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
-            {
-                SparkLCD_Text(16, 104, songText,
-                              0xFFFF, 0x0000);
-
-                SparkLCD_Text(
-                    16, 136,
-                    selectionActive
-                        ? "Status: Selecting   "
-                        : "Status: Ready       ",
-                    0xFFFF, 0x0000);
-
-                SparkLCD_Text(
-                    16, 184,
-                    selectionActive
-                        ? choiceText
-                        : "                    ",
-                    0xFFFF, 0x0000);
-
-                xSemaphoreGive(lcdMutexHandle);
-            }
-
-            displayChanged = 0;
-        }
-
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-    /* USER CODE END StartButtonTask */
 }
 
 void StartVolumeTask(void *argument)
@@ -503,23 +426,8 @@ void StartVolumeTask(void *argument)
                     (percent == 0U && displayedPercent != 0U) ||
                     (percent == 100U && displayedPercent != 100U))
                 {
-                    char text[] = "Volume:   0%";
-
-                    text[8] = percent >= 100U ? '1' : ' ';
-                    text[9] = percent >= 10U
-                              ? (char)('0' + (percent / 10U) % 10U)
-                              : ' ';
-                    text[10] = (char)('0' + percent % 10U);
-
-                    if (xSemaphoreTake(lcdMutexHandle,
-                                       portMAX_DELAY) == pdTRUE)
-                    {
-                        SparkLCD_Text(16, 160, text,
-                                      0xFFFF, 0x0000);
-
-                        xSemaphoreGive(lcdMutexHandle);
-                    }
-
+                    volumePercent = (uint8_t)percent;
+                    SparkAudio_SetVolume(volumePercent);
                     displayedPercent = percent;
                 }
             }
