@@ -22,9 +22,11 @@
 #include "task.h"
 #include "semphr.h"
 
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "spark_lcd.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -203,8 +205,15 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
+__HAL_RCC_GPIOE_CLK_ENABLE();
 
-  /* USER CODE END MX_GPIO_Init_2 */
+GPIO_InitTypeDef buttons = {0};
+buttons.Pin = GPIO_PIN_2 | GPIO_PIN_3 |
+              GPIO_PIN_4 | GPIO_PIN_5;
+buttons.Mode = GPIO_MODE_INPUT;
+buttons.Pull = GPIO_NOPULL; /* Your external 10 kΩ pull-ups */
+HAL_GPIO_Init(GPIOE, &buttons);
+/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
@@ -251,23 +260,33 @@ void StartDisplayTask(void *argument)
     const char message[] = "AudioPlayer: LCD initialized\r\n";
 
     if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
-{
-    SparkLCD_Fill(0x0000); /* Black background */
+    {
+        SparkLCD_Fill(0x0000);
 
-    SparkLCD_Text(16, 24, "STM32 AUDIO PLAYER",
-                  0xFFFF, 0x0000);
+        SparkLCD_Text(16, 24, "STM32 AUDIO PLAYER",
+                      0xFFFF, 0x0000);
 
-    SparkLCD_Text(16, 64, "LCD text ready",
-                  0x07E0, 0x0000);
+        SparkLCD_Text(16, 64, "LCD text ready",
+                      0x07E0, 0x0000);
 
-    SparkLCD_Text(16, 104, "Song: --",
-                  0xFFFF, 0x0000);
+        SparkLCD_Text(16, 104, "Song: --",
+                      0xFFFF, 0x0000);
 
-    SparkLCD_Text(16, 136, "Status: Ready",
-                  0xFFFF, 0x0000);
+        SparkLCD_Text(16, 136, "Status: Ready",
+                      0xFFFF, 0x0000);
 
-    xSemaphoreGive(lcdMutexHandle);
-}
+        xSemaphoreGive(lcdMutexHandle);
+    }
+
+    HAL_UART_Transmit(&huart1,
+                     (uint8_t *)message,
+                     sizeof(message) - 1,
+                     100);
+
+    for (;;)
+    {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     /* USER CODE END 5 */
 }
 
@@ -280,13 +299,49 @@ void StartDisplayTask(void *argument)
 /* USER CODE END Header_StartButtonTask */
 void StartButtonTask(void *argument)
 {
-  /* USER CODE BEGIN StartButtonTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    vTaskDelay(pdMS_TO_TICKS(20));
-  }
-  /* USER CODE END StartButtonTask */
+    /* USER CODE BEGIN StartButtonTask */
+    uint8_t previous = 0xFF;
+
+    for (;;)
+    {
+        uint8_t pressed = 0;
+
+        /* Read all four inputs together; LOW means pressed. */
+        uint32_t inputs = GPIOE->IDR;
+
+        for (uint8_t i = 0; i < 4; i++)
+        {
+            if ((inputs & (GPIO_PIN_2 << i)) == 0)
+            {
+                pressed |= (1U << i);
+            }
+        }
+
+        if (pressed != previous)
+        {
+            char text[32];
+
+            snprintf(text, sizeof(text),
+                     "B1:%u B2:%u B3:%u B4:%u",
+                     (unsigned int)((pressed >> 0) & 1U),
+                     (unsigned int)((pressed >> 1) & 1U),
+                     (unsigned int)((pressed >> 2) & 1U),
+                     (unsigned int)((pressed >> 3) & 1U));
+
+            if (xSemaphoreTake(lcdMutexHandle,
+                               portMAX_DELAY) == pdTRUE)
+            {
+                SparkLCD_Text(16, 184, text,
+                              0xFFFF, 0x0000);
+                xSemaphoreGive(lcdMutexHandle);
+            }
+
+            previous = pressed;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    /* USER CODE END StartButtonTask */
 }
 
 /* USER CODE BEGIN Header_StartVolumeTask */
