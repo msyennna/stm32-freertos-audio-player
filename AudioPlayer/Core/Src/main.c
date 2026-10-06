@@ -56,7 +56,7 @@ UART_HandleTypeDef huart1;
 
 static uint8_t currentSong = 0;
 static uint8_t pendingSong = 0;
-static uint8_t selectionActive = 0;
+static volatile uint8_t selectionActive = 0;
 static TickType_t selectionStartTick = 0;
 
 /* USER CODE END PV */
@@ -211,14 +211,19 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-__HAL_RCC_GPIOE_CLK_ENABLE();
+__HAL_RCC_GPIOF_CLK_ENABLE();
 
-GPIO_InitTypeDef buttons = {0};
-buttons.Pin = GPIO_PIN_2 | GPIO_PIN_3 |
-              GPIO_PIN_4 | GPIO_PIN_5;
-buttons.Mode = GPIO_MODE_INPUT;
-buttons.Pull = GPIO_NOPULL; /* Your external 10 kΩ pull-ups */
-HAL_GPIO_Init(GPIOE, &buttons);
+HAL_GPIO_WritePin(GPIOF,
+                  GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7,
+                  GPIO_PIN_RESET);
+
+GPIO_InitTypeDef leds = {0};
+leds.Pin = GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
+leds.Mode = GPIO_MODE_OUTPUT_PP;
+leds.Pull = GPIO_NOPULL;
+leds.Speed = GPIO_SPEED_FREQ_LOW;
+HAL_GPIO_Init(GPIOF, &leds);
+
 /* USER CODE END MX_GPIO_Init_2 */
 }
 
@@ -290,9 +295,22 @@ void StartDisplayTask(void *argument)
                      100);
 
     for (;;)
-    {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+{
+    uint8_t selecting = selectionActive;
+
+    /* Red: ready */
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_5,
+                      selecting ? GPIO_PIN_RESET : GPIO_PIN_SET);
+
+    /* Green: selecting */
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6,
+                      selecting ? GPIO_PIN_SET : GPIO_PIN_RESET);
+
+    /* Blue: reserved for playback */
+    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_7, GPIO_PIN_RESET);
+
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
     /* USER CODE END 5 */
 }
 
