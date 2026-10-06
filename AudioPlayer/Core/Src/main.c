@@ -9,6 +9,7 @@
 #include "spark_songs.h"
 #include <stdio.h>
 #include <string.h>
+#include "timers.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
@@ -29,6 +30,7 @@ static uint8_t currentSong = 0;
 static uint8_t pendingSong = 0;
 static volatile uint8_t selectionActive = 0;
 static TickType_t selectionStartTick = 0;
+static TimerHandle_t selectionTimer = NULL;
 /* USER CODE END PV */
 
 /* USER CODE BEGIN PFP */
@@ -42,6 +44,20 @@ void StartDisplayTask(void *argument);
 void StartButtonTask(void *argument);
 void StartVolumeTask(void *argument);
 /* USER CODE END PFP */
+
+static void SelectionTimeoutCallback(TimerHandle_t timer)
+{
+    (void)timer;
+
+    /* The time check prevents an older timeout from
+       cancelling a newly opened selection window. */
+    if (selectionActive &&
+        (TickType_t)(xTaskGetTickCount() - selectionStartTick)
+            >= pdMS_TO_TICKS(5000))
+    {
+        selectionActive = 0;
+    }
+}
 
 int main(void)
 {
@@ -75,7 +91,18 @@ codecDetected =
     {
         Error_Handler();
     }
+selectionTimer = xTimerCreate(
+    "SelectionTimeout",
+    pdMS_TO_TICKS(5000),
+    pdFALSE,  /* One-shot timer. */
+    NULL,
+    SelectionTimeoutCallback
+);
 
+if (selectionTimer == NULL)
+{
+    Error_Handler();
+}
     if (xTaskCreate(StartDisplayTask, "DisplayTask", 512,
                     NULL, 1, &DisplayTaskHandle) != pdPASS)
     {
@@ -152,6 +179,15 @@ static void MX_GPIO_Init(void)
     buttons.Mode = GPIO_MODE_INPUT;
     buttons.Pull = GPIO_NOPULL;
     HAL_GPIO_Init(GPIOE, &buttons);
+
+    /* Built-in UP button: PC5, active-low. */
+__HAL_RCC_GPIOC_CLK_ENABLE();
+
+GPIO_InitTypeDef userButton = {0};
+userButton.Pin = GPIO_PIN_5;
+userButton.Mode = GPIO_MODE_INPUT;
+userButton.Pull = GPIO_PULLUP;
+HAL_GPIO_Init(GPIOC, &userButton);
 
     /* Common-cathode RGB: PF5 red, PF6 green, PF7 blue. */
     HAL_GPIO_WritePin(GPIOF,
@@ -287,9 +323,10 @@ void StartDisplayTask(void *argument)
 {
     (void)argument;
     const char message[] =
-        "Hold B2-B4 for binary song 1-8, then press B1.\r\n"
-        "Release all buttons; press B1 within 5 seconds to confirm.\r\n"
-        "Potentiometer controls playback volume.\r\n";
+    "Hold B2-B4 for binary song 1-8, then press B1.\r\n"
+    "Release all buttons; press B1 within 5 seconds to confirm.\r\n"
+    "Built-in UP button: pause/resume.\r\n"
+    "Potentiometer controls playback volume.\r\n";
     HAL_UART_Transmit(&huart1, (uint8_t *)message, sizeof(message)-1, 100);
     uint32_t handledRequest = 0;
     char oldLines[7][27] = {{0}};
@@ -310,8 +347,13 @@ void StartDisplayTask(void *argument)
         snprintf(lines[1], 27, "%s", codecDetected ? "Codec: detected" : "Codec: not detected");
         snprintf(lines[2], 27, "Song %u: %.17s", (unsigned)currentSong+1, song.title);
         snprintf(lines[3], 27, "%.26s", song.subtitle);
-        snprintf(lines[4], 27, "Status: %s", failed ? "Audio error" :
-                 selectionActive ? "Confirm choice" : running ? "Playing" : "Ready");
+        snprintf(
+    lines[4], 27, "Status: %s",
+    failed ? "Audio error" :
+    selectionActive ? "Confirm choice" :
+    SparkAudio_IsPaused() ? "Paused" :
+    running ? "Playing" : "Ready"
+);
         snprintf(lines[5], 27, "Volume: %3u%%", (unsigned)volumePercent);
         if (selectionActive)
             snprintf(lines[6], 27, "Choice: %u - press B1", (unsigned)pendingSong+1);
@@ -340,9 +382,33 @@ void StartButtonTask(void *argument)
     (void)argument;
     uint8_t lastRaw = 0, stable = 0;
     TickType_t changed = xTaskGetTickCount();
+    uint8_t userLastRaw = 0;
+uint8_t userStable = 0;
+TickType_t userChanged = xTaskGetTickCount();
+
+
     for (;;)
     {
         TickType_t now = xTaskGetTickCount();
+        uint8_t userRaw =
+    HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_5) == GPIO_PIN_RESET;
+
+if (userRaw != userLastRaw)
+{
+    userLastRaw = userRaw;
+    userChanged = now;
+}
+
+if (userRaw != userStable &&
+    (TickType_t)(now - userChanged) >= pdMS_TO_TICKS(40))
+{
+    userStable = userRaw;
+
+    if (userStable)
+    {
+        SparkAudio_TogglePause();
+    }
+}
         uint8_t raw = (uint8_t)((~GPIOE->IDR >> 2) & 15U);
         if (raw != lastRaw) { lastRaw = raw; changed = now; }
         if (selectionActive && now-selectionStartTick >= pdMS_TO_TICKS(5000))
@@ -360,12 +426,24 @@ void StartButtonTask(void *argument)
                     pendingSong = (stable >> 1) & 7U;
                     selectionStartTick = now;
                     selectionActive = 1;
+
+                    if (xTimerReset(selectionTimer, 0) != pdPASS)
+{
+    selectionActive = 0;
+}
                 }
                 else
                 {
                     currentSong = pendingSong;
-                    selectionActive = 0;
-                    ++playRequest; /* Allows replay of the same song. */
+selectionActive = 0;
+
+if (xTimerStop(selectionTimer, 0) != pdPASS)
+{
+    /* Any eventual callback is harmless because
+       selectionActive is already zero. */
+}
+
+++playRequest;
                 }
             }
         }
