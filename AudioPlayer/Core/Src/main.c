@@ -24,7 +24,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "spark_lcd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -96,10 +96,12 @@ int main(void)
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  /* USER CODE BEGIN 2 */
-  MX_USART1_UART_Init();
-  /* USER CODE END 2 */
+MX_GPIO_Init();
+/* USER CODE BEGIN 2 */
+MX_USART1_UART_Init();
+SparkLCD_Init();
+SparkLCD_Fill(0x0000);
+/* USER CODE END 2 */
 
   /* Init scheduler */
  lcdMutexHandle = xSemaphoreCreateMutex();
@@ -246,16 +248,22 @@ static void MX_USART1_UART_Init(void)
 void StartDisplayTask(void *argument)
 {
     /* USER CODE BEGIN 5 */
-    const char message[] = "AudioPlayer: DisplayTask running\r\n";
+    const char message[] = "AudioPlayer: LCD initialized\r\n";
+
+    if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
+    {
+        SparkLCD_Fill(0x001F); /* Blue */
+        xSemaphoreGive(lcdMutexHandle);
+    }
+
+    HAL_UART_Transmit(&huart1,
+                     (uint8_t *)message,
+                     sizeof(message) - 1,
+                     100);
 
     for (;;)
     {
-        HAL_UART_Transmit(&huart1,
-                         (uint8_t *)message,
-                         sizeof(message) - 1,
-                         100);
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
     /* USER CODE END 5 */
 }
