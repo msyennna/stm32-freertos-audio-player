@@ -339,3 +339,26 @@ HAL_StatusTypeDef SparkAudio_PlaySong(uint8_t index)
     __set_PRIMASK(interruptMask);
     return HAL_OK;
 }
+
+
+/* Called by DisplayTask. Reads the note ticker; does not change playback. */
+void SparkAudio_GetPositionMillis(uint32_t *position, uint32_t *length)
+{
+    uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+    uint16_t index = noteIndex;
+    uint16_t count = noteCount;
+    uint32_t ticks = noteTicks;
+    __set_PRIMASK(mask);
+
+    uint32_t total = 0, played = 0;
+    for (uint16_t i = 0; i < count; ++i)
+    {
+        total += noteMilliseconds[i];
+        if (i < index) played += noteMilliseconds[i];
+    }
+    if (index < count) played += ticks;
+    if (played > total) played = total;
+    if (position) *position = played;
+    if (length) *length = total;
+}

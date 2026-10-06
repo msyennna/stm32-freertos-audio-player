@@ -251,3 +251,60 @@ void SparkLCD_Text(uint16_t x, uint16_t y, const char *text,
         }
     }
 }
+
+void SparkLCD_Rect(uint16_t x, uint16_t y, uint16_t width,
+                   uint16_t height, uint16_t color)
+{
+    if (x >= 240U || y >= 240U || !width || !height) return;
+    if (width > 240U - x) width = 240U - x;
+    if (height > 240U - y) height = 240U - y;
+    set_window(x, y, x + width - 1U, y + height - 1U);
+    for (uint32_t i = 0; i < (uint32_t)width * height; ++i)
+    {
+        data((uint8_t)(color >> 8));
+        data((uint8_t)color);
+    }
+}
+
+void SparkLCD_Circle(uint16_t cx, uint16_t cy, uint16_t radius,
+                     uint16_t color)
+{
+    if (radius > 240U) radius = 240U;
+    for (int32_t dy = -(int32_t)radius; dy <= (int32_t)radius; ++dy)
+    {
+        int32_t y = (int32_t)cy + dy;
+        if (y < 0 || y >= 240) continue;
+        int32_t span = radius;
+        while (span * span + dy * dy > (int32_t)radius * radius) --span;
+        int32_t left = (int32_t)cx - span;
+        int32_t right = (int32_t)cx + span;
+        if (left < 0) left = 0;
+        if (right > 239) right = 239;
+        if (left <= right)
+            SparkLCD_Rect((uint16_t)left, (uint16_t)y,
+                          (uint16_t)(right - left + 1), 1, color);
+    }
+}
+
+void SparkLCD_RoundRect(uint16_t x, uint16_t y, uint16_t width,
+                        uint16_t height, uint16_t radius, uint16_t color)
+{
+    if (x >= 240U || y >= 240U || !width || !height) return;
+    if (width > 240U - x) width = 240U - x;
+    if (height > 240U - y) height = 240U - y;
+    if (radius > width / 2U) radius = width / 2U;
+    if (radius > height / 2U) radius = height / 2U;
+    for (uint16_t row = 0; row < height; ++row)
+    {
+        uint16_t inset = 0;
+        if (radius && (row < radius || row >= height - radius))
+        {
+            int32_t dy = row < radius ? radius - row - 1U
+                                     : row - (height - radius);
+            int32_t span = radius;
+            while (span * span + dy * dy > (int32_t)radius * radius) --span;
+            inset = radius - (uint16_t)span;
+        }
+        SparkLCD_Rect(x + inset, y + row, width - 2U * inset, 1, color);
+    }
+}
