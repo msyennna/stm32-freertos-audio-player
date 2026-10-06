@@ -1,246 +1,164 @@
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-/* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
 
-
-/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "spark_lcd.h"
-#include <stdio.h>
 /* USER CODE END Includes */
 
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
+/* USER CODE BEGIN PV */
+UART_HandleTypeDef huart1;
+ADC_HandleTypeDef hadc1;
 
-/* USER CODE END PTD */
-
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
-
-/* USER CODE END PD */
-
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
-
-/* USER CODE END PM */
-
-/* Private variables ---------------------------------------------------------*/
-/* Definitions for DisplayTask */
 TaskHandle_t DisplayTaskHandle;
 TaskHandle_t ButtonTaskHandle;
 TaskHandle_t VolumeTaskHandle;
 SemaphoreHandle_t lcdMutexHandle;
-/* USER CODE BEGIN PV */
-
-UART_HandleTypeDef huart1;
 
 static uint8_t currentSong = 0;
 static uint8_t pendingSong = 0;
 static volatile uint8_t selectionActive = 0;
 static TickType_t selectionStartTick = 0;
-
 /* USER CODE END PV */
-/* Private function prototypes -----------------------------------------------*/
+
+/* USER CODE BEGIN PFP */
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_USART1_UART_Init(void);
+static void MX_ADC1_Init(void);
+
 void StartDisplayTask(void *argument);
 void StartButtonTask(void *argument);
 void StartVolumeTask(void *argument);
-
-/* USER CODE BEGIN PFP */
-static void MX_USART1_UART_Init(void);
 /* USER CODE END PFP */
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-
-/* USER CODE END 0 */
-
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
 int main(void)
 {
+    HAL_Init();
+    SystemClock_Config();
 
-  /* USER CODE BEGIN 1 */
+    MX_GPIO_Init();
 
-  /* USER CODE END 1 */
+    /* USER CODE BEGIN 2 */
+    MX_USART1_UART_Init();
+    MX_ADC1_Init();
+    SparkLCD_Init();
+    SparkLCD_Fill(0x0000);
+    /* USER CODE END 2 */
 
-  /* MCU Configuration--------------------------------------------------------*/
+    lcdMutexHandle = xSemaphoreCreateMutex();
 
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
+    if (lcdMutexHandle == NULL)
+    {
+        Error_Handler();
+    }
 
-  /* USER CODE BEGIN Init */
+    if (xTaskCreate(StartDisplayTask, "DisplayTask", 512,
+                    NULL, 1, &DisplayTaskHandle) != pdPASS)
+    {
+        Error_Handler();
+    }
 
-  /* USER CODE END Init */
+    if (xTaskCreate(StartButtonTask, "ButtonTask", 256,
+                    NULL, 1, &ButtonTaskHandle) != pdPASS)
+    {
+        Error_Handler();
+    }
 
-  /* Configure the system clock */
-  SystemClock_Config();
+    if (xTaskCreate(StartVolumeTask, "VolumeTask", 256,
+                    NULL, 1, &VolumeTaskHandle) != pdPASS)
+    {
+        Error_Handler();
+    }
 
-  /* USER CODE BEGIN SysInit */
+    vTaskStartScheduler();
 
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
-MX_GPIO_Init();
-/* USER CODE BEGIN 2 */
-MX_USART1_UART_Init();
-SparkLCD_Init();
-SparkLCD_Fill(0x0000);
-/* USER CODE END 2 */
-
-  /* Init scheduler */
- lcdMutexHandle = xSemaphoreCreateMutex();
-
-if (lcdMutexHandle == NULL)
-{
+    /* The scheduler returns only if it could not start. */
     Error_Handler();
+
+    while (1)
+    {
+    }
 }
 
-if (xTaskCreate(StartDisplayTask, "DisplayTask", 512,
-                NULL, 1, &DisplayTaskHandle) != pdPASS)
-{
-    Error_Handler();
-}
-
-if (xTaskCreate(StartButtonTask, "ButtonTask", 256,
-                NULL, 1, &ButtonTaskHandle) != pdPASS)
-{
-    Error_Handler();
-}
-
-if (xTaskCreate(StartVolumeTask, "VolumeTask", 256,
-                NULL, 1, &VolumeTaskHandle) != pdPASS)
-{
-    Error_Handler();
-}
-
-vTaskStartScheduler();
-
-/* Reaching here means the scheduler could not start. */
-Error_Handler();
-
-  /* We should never get here as control is now taken by the scheduler */
-
-  /* Infinite loop */
-  /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-    /* USER CODE END WHILE */
-
-    /* USER CODE BEGIN 3 */
-  }
-  /* USER CODE END 3 */
-}
-
-/**
-  * @brief System Clock Configuration
-  * @retval None
-  */
 void SystemClock_Config(void)
 {
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+    RCC_OscInitTypeDef oscillator = {0};
+    RCC_ClkInitTypeDef clocks = {0};
 
-  /** Configure the main internal regulator output voltage
-  */
-  __HAL_RCC_PWR_CLK_ENABLE();
-  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+    __HAL_RCC_PWR_CLK_ENABLE();
+    __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    oscillator.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    oscillator.HSIState = RCC_HSI_ON;
+    oscillator.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    oscillator.PLL.PLLState = RCC_PLL_NONE;
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+    if (HAL_RCC_OscConfig(&oscillator) != HAL_OK)
+    {
+        Error_Handler();
+    }
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
-  {
-    Error_Handler();
-  }
+    clocks.ClockType = RCC_CLOCKTYPE_HCLK |
+                       RCC_CLOCKTYPE_SYSCLK |
+                       RCC_CLOCKTYPE_PCLK1 |
+                       RCC_CLOCKTYPE_PCLK2;
+
+    clocks.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    clocks.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    clocks.APB1CLKDivider = RCC_HCLK_DIV1;
+    clocks.APB2CLKDivider = RCC_HCLK_DIV1;
+
+    if (HAL_RCC_ClockConfig(&clocks, FLASH_LATENCY_0) != HAL_OK)
+    {
+        Error_Handler();
+    }
 }
 
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
 static void MX_GPIO_Init(void)
 {
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
+    /* USER CODE BEGIN MX_GPIO_Init_2 */
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_GPIOE_CLK_ENABLE();
+    __HAL_RCC_GPIOF_CLK_ENABLE();
 
-  /* USER CODE END MX_GPIO_Init_1 */
+    /* Buttons: PE2-PE5, with external 10 kOhm pull-ups. */
+    GPIO_InitTypeDef buttons = {0};
+    buttons.Pin = GPIO_PIN_2 | GPIO_PIN_3 |
+                  GPIO_PIN_4 | GPIO_PIN_5;
+    buttons.Mode = GPIO_MODE_INPUT;
+    buttons.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOE, &buttons);
 
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOA_CLK_ENABLE();
+    /* Common-cathode RGB: PF5 red, PF6 green, PF7 blue. */
+    HAL_GPIO_WritePin(GPIOF,
+                      GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7,
+                      GPIO_PIN_RESET);
 
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-__HAL_RCC_GPIOF_CLK_ENABLE();
-
-HAL_GPIO_WritePin(GPIOF,
-                  GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7,
-                  GPIO_PIN_RESET);
-
-GPIO_InitTypeDef leds = {0};
-leds.Pin = GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
-leds.Mode = GPIO_MODE_OUTPUT_PP;
-leds.Pull = GPIO_NOPULL;
-leds.Speed = GPIO_SPEED_FREQ_LOW;
-HAL_GPIO_Init(GPIOF, &leds);
-
-/* USER CODE END MX_GPIO_Init_2 */
+    GPIO_InitTypeDef leds = {0};
+    leds.Pin = GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7;
+    leds.Mode = GPIO_MODE_OUTPUT_PP;
+    leds.Pull = GPIO_NOPULL;
+    leds.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOF, &leds);
+    /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 static void MX_USART1_UART_Init(void)
 {
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitTypeDef gpio = {0};
 
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_USART1_CLK_ENABLE();
 
-    GPIO_InitStruct.Pin = GPIO_PIN_9 | GPIO_PIN_10;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_PULLUP;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    GPIO_InitStruct.Alternate = GPIO_AF7_USART1;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    gpio.Pin = GPIO_PIN_9 | GPIO_PIN_10;
+    gpio.Mode = GPIO_MODE_AF_PP;
+    gpio.Pull = GPIO_PULLUP;
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF7_USART1;
+    HAL_GPIO_Init(GPIOA, &gpio);
 
     huart1.Instance = USART1;
     huart1.Init.BaudRate = 115200;
@@ -256,19 +174,62 @@ static void MX_USART1_UART_Init(void)
         Error_Handler();
     }
 }
+
+static void MX_ADC1_Init(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+    ADC_ChannelConfTypeDef channel = {0};
+
+    __HAL_RCC_GPIOA_CLK_ENABLE();
+    __HAL_RCC_ADC1_CLK_ENABLE();
+
+    /* Potentiometer wiper: PA0, ADC1 channel 0. */
+    gpio.Pin = GPIO_PIN_0;
+    gpio.Mode = GPIO_MODE_ANALOG;
+    gpio.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOA, &gpio);
+
+    hadc1.Instance = ADC1;
+    hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+    hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+    hadc1.Init.ScanConvMode = DISABLE;
+    hadc1.Init.ContinuousConvMode = DISABLE;
+    hadc1.Init.DiscontinuousConvMode = DISABLE;
+    hadc1.Init.NbrOfDiscConversion = 0;
+    hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+    hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+    hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+    hadc1.Init.NbrOfConversion = 1;
+    hadc1.Init.DMAContinuousRequests = DISABLE;
+    hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+
+    if (HAL_ADC_Init(&hadc1) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    channel.Channel = ADC_CHANNEL_0;
+    channel.Rank = 1;
+    channel.SamplingTime = ADC_SAMPLETIME_144CYCLES;
+
+    if (HAL_ADC_ConfigChannel(&hadc1, &channel) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
 /* USER CODE END 4 */
 
-/* USER CODE BEGIN Header_StartDisplayTask */
-/**
-  * @brief  Function implementing the DisplayTask thread.
-  * @param  argument: Not used
-  * @retval None
-  */
-/* USER CODE END Header_StartDisplayTask */
 void StartDisplayTask(void *argument)
 {
     /* USER CODE BEGIN 5 */
-    const char message[] = "AudioPlayer: LCD initialized\r\n";
+    (void)argument;
+
+    const char message[] =
+        "AudioPlayer: ready\r\n"
+        "B1: enter selection / confirm\r\n"
+        "Hold B2-B4 for binary song choice 1-8.\r\n"
+        "Confirm within 5 seconds.\r\n"
+        "Potentiometer: volume setting.\r\n";
 
     if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
     {
@@ -280,7 +241,7 @@ void StartDisplayTask(void *argument)
         SparkLCD_Text(16, 64, "LCD text ready",
                       0x07E0, 0x0000);
 
-        SparkLCD_Text(16, 104, "Song: --",
+        SparkLCD_Text(16, 104, "Song: 1",
                       0xFFFF, 0x0000);
 
         SparkLCD_Text(16, 136, "Status: Ready",
@@ -290,37 +251,30 @@ void StartDisplayTask(void *argument)
     }
 
     HAL_UART_Transmit(&huart1,
-                     (uint8_t *)message,
-                     sizeof(message) - 1,
-                     100);
+                      (uint8_t *)message,
+                      sizeof(message) - 1,
+                      100);
 
     for (;;)
-{
-    uint8_t selecting = selectionActive;
+    {
+        uint8_t selecting = selectionActive;
 
-    /* Red: ready */
-    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_5,
-                      selecting ? GPIO_PIN_RESET : GPIO_PIN_SET);
+        /* Red: ready. */
+        HAL_GPIO_WritePin(GPIOF, GPIO_PIN_5,
+                          selecting ? GPIO_PIN_RESET : GPIO_PIN_SET);
 
-    /* Green: selecting */
-    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6,
-                      selecting ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        /* Green: selecting. */
+        HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6,
+                          selecting ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-    /* Blue: reserved for playback */
-    HAL_GPIO_WritePin(GPIOF, GPIO_PIN_7, GPIO_PIN_RESET);
+        /* Blue will be used when playback is implemented. */
+        HAL_GPIO_WritePin(GPIOF, GPIO_PIN_7, GPIO_PIN_RESET);
 
-    vTaskDelay(pdMS_TO_TICKS(20));
-}
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
     /* USER CODE END 5 */
 }
 
-/* USER CODE BEGIN Header_StartButtonTask */
-/**
-* @brief Function implementing the ButtonTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartButtonTask */
 void StartButtonTask(void *argument)
 {
     /* USER CODE BEGIN StartButtonTask */
@@ -336,10 +290,9 @@ void StartButtonTask(void *argument)
     {
         TickType_t now = xTaskGetTickCount();
         uint8_t rawButtons = 0;
-
-        /* Active-low inputs: pressed = 1. */
         uint32_t inputs = GPIOE->IDR;
 
+        /* Active-low buttons: pressed = 1. */
         for (uint8_t i = 0; i < 4; i++)
         {
             if ((inputs & (GPIO_PIN_2 << i)) == 0)
@@ -348,14 +301,13 @@ void StartButtonTask(void *argument)
             }
         }
 
-        /* Require the reading to remain unchanged for 40 ms. */
         if (rawButtons != lastRaw)
         {
             lastRaw = rawButtons;
             lastChangeTick = now;
         }
 
-        /* Expire selection before accepting a late confirmation. */
+        /* Cancel an unconfirmed choice after five seconds. */
         if (selectionActive &&
             (TickType_t)(now - selectionStartTick) >=
                 pdMS_TO_TICKS(5000))
@@ -365,6 +317,7 @@ void StartButtonTask(void *argument)
             displayChanged = 1;
         }
 
+        /* Accept changes after 40 ms of stable input. */
         if (rawButtons != stableButtons &&
             (TickType_t)(now - lastChangeTick) >=
                 pdMS_TO_TICKS(40))
@@ -378,12 +331,10 @@ void StartButtonTask(void *argument)
             {
                 if (!selectionActive)
                 {
-                    selectionActive = 1;
                     selectionStartTick = now;
-
-                    /* B2, B3, B4 represent bits 0, 1, 2. */
                     pendingSong =
                         (uint8_t)((stableButtons >> 1) & 0x07U);
+                    selectionActive = 1;
                 }
                 else
                 {
@@ -443,73 +394,115 @@ void StartButtonTask(void *argument)
     /* USER CODE END StartButtonTask */
 }
 
-/* USER CODE BEGIN Header_StartVolumeTask */
-/**
-* @brief Function implementing the VolumeTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartVolumeTask */
 void StartVolumeTask(void *argument)
 {
-  /* USER CODE BEGIN StartVolumeTask */
-  /* Infinite loop */
-  for(;;)
-  {
-    vTaskDelay(pdMS_TO_TICKS(100));
-  }
-  /* USER CODE END StartVolumeTask */
+    /* USER CODE BEGIN StartVolumeTask */
+    (void)argument;
+
+    uint32_t filteredRaw = 0;
+    uint32_t displayedPercent = 101;
+    uint8_t initialized = 0;
+
+    for (;;)
+    {
+        if (HAL_ADC_Start(&hadc1) == HAL_OK)
+        {
+            if (HAL_ADC_PollForConversion(&hadc1, 10) == HAL_OK)
+            {
+                uint32_t raw = HAL_ADC_GetValue(&hadc1);
+
+                if (!initialized)
+                {
+                    filteredRaw = raw;
+                    initialized = 1;
+                }
+                else
+                {
+                    /* Smooth readings using a moving average. */
+                    filteredRaw =
+                        (filteredRaw * 7U + raw + 4U) / 8U;
+                }
+
+                uint32_t percent =
+                    (filteredRaw * 100U + 2047U) / 4095U;
+
+                /* Make the endpoints easier to reach. */
+                if (percent <= 1U)
+                {
+                    percent = 0;
+                }
+                else if (percent >= 99U)
+                {
+                    percent = 100;
+                }
+
+                uint32_t difference =
+                    percent > displayedPercent
+                        ? percent - displayedPercent
+                        : displayedPercent - percent;
+
+                /* Ignore small fluctuations in the display. */
+                if (displayedPercent == 101U ||
+                    difference >= 2U ||
+                    (percent == 0U && displayedPercent != 0U) ||
+                    (percent == 100U && displayedPercent != 100U))
+                {
+                    char text[] = "Volume:   0%";
+
+                    text[8] = percent >= 100U ? '1' : ' ';
+                    text[9] = percent >= 10U
+                              ? (char)('0' + (percent / 10U) % 10U)
+                              : ' ';
+                    text[10] = (char)('0' + percent % 10U);
+
+                    if (xSemaphoreTake(lcdMutexHandle,
+                                       portMAX_DELAY) == pdTRUE)
+                    {
+                        SparkLCD_Text(16, 160, text,
+                                      0xFFFF, 0x0000);
+
+                        xSemaphoreGive(lcdMutexHandle);
+                    }
+
+                    displayedPercent = percent;
+                }
+            }
+
+            HAL_ADC_Stop(&hadc1);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    /* USER CODE END StartVolumeTask */
 }
 
-/**
-  * @brief  Period elapsed callback in non blocking mode
-  * @note   This function is called  when TIM6 interrupt took place, inside
-  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
-  * a global variable "uwTick" used as application time base.
-  * @param  htim : TIM handle
-  * @retval None
-  */
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
-  /* USER CODE BEGIN Callback 0 */
-
-  /* USER CODE END Callback 0 */
-  if (htim->Instance == TIM6)
-  {
-    HAL_IncTick();
-  }
-  /* USER CODE BEGIN Callback 1 */
-
-  /* USER CODE END Callback 1 */
+    /* USER CODE BEGIN Callback 0 */
+    if (htim->Instance == TIM6)
+    {
+        HAL_IncTick();
+    }
+    /* USER CODE END Callback 0 */
 }
 
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
-  /* USER CODE END Error_Handler_Debug */
+    /* USER CODE BEGIN Error_Handler_Debug */
+    __disable_irq();
+
+    while (1)
+    {
+    }
+    /* USER CODE END Error_Handler_Debug */
 }
+
 #ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
+    /* USER CODE BEGIN 6 */
+    (void)file;
+    (void)line;
+    /* USER CODE END 6 */
 }
-#endif /* USE_FULL_ASSERT */
+#endif
