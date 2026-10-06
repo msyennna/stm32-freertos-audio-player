@@ -8,6 +8,8 @@
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
+I2C_HandleTypeDef hi2c2;
+static uint8_t codecDetected = 0;
 UART_HandleTypeDef huart1;
 ADC_HandleTypeDef hadc1;
 
@@ -24,6 +26,7 @@ static TickType_t selectionStartTick = 0;
 
 /* USER CODE BEGIN PFP */
 void SystemClock_Config(void);
+static void MX_I2C2_Init(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_ADC1_Init(void);
@@ -40,12 +43,19 @@ int main(void)
 
     MX_GPIO_Init();
 
-    /* USER CODE BEGIN 2 */
-    MX_USART1_UART_Init();
-    MX_ADC1_Init();
-    SparkLCD_Init();
-    SparkLCD_Fill(0x0000);
-    /* USER CODE END 2 */
+   /* USER CODE BEGIN 2 */
+MX_USART1_UART_Init();
+MX_ADC1_Init();
+MX_I2C2_Init();
+
+SparkLCD_Init();
+SparkLCD_Fill(0x0000);
+
+/* HAL expects the 7-bit address shifted left once. */
+codecDetected =
+    (HAL_I2C_IsDeviceReady(&hi2c2, (0x10U << 1), 3, 100)
+     == HAL_OK);
+/* USER CODE END 2 */
 
     lcdMutexHandle = xSemaphoreCreateMutex();
 
@@ -217,6 +227,37 @@ static void MX_ADC1_Init(void)
         Error_Handler();
     }
 }
+
+static void MX_I2C2_Init(void)
+{
+    GPIO_InitTypeDef gpio = {0};
+
+    __HAL_RCC_GPIOF_CLK_ENABLE();
+    __HAL_RCC_I2C2_CLK_ENABLE();
+
+    /* Spark-1 codec bus: PF1 SCL, PF0 SDA. */
+    gpio.Pin = GPIO_PIN_0 | GPIO_PIN_1;
+    gpio.Mode = GPIO_MODE_AF_OD;
+    gpio.Pull = GPIO_NOPULL; /* Board has external pull-ups. */
+    gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    gpio.Alternate = GPIO_AF4_I2C2;
+    HAL_GPIO_Init(GPIOF, &gpio);
+
+    hi2c2.Instance = I2C2;
+    hi2c2.Init.ClockSpeed = 100000;
+    hi2c2.Init.DutyCycle = I2C_DUTYCYCLE_2;
+    hi2c2.Init.OwnAddress1 = 0;
+    hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+    hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c2.Init.OwnAddress2 = 0;
+    hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+
+    if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+    {
+        Error_Handler();
+    }
+}
 /* USER CODE END 4 */
 
 void StartDisplayTask(void *argument)
@@ -238,8 +279,11 @@ void StartDisplayTask(void *argument)
         SparkLCD_Text(16, 24, "STM32 AUDIO PLAYER",
                       0xFFFF, 0x0000);
 
-        SparkLCD_Text(16, 64, "LCD text ready",
-                      0x07E0, 0x0000);
+        SparkLCD_Text(
+    16, 64,
+    codecDetected ? "Codec: detected" : "Codec: not detected",
+    codecDetected ? 0x07E0 : 0xF800,
+    0x0000);
 
         SparkLCD_Text(16, 104, "Song: 1",
                       0xFFFF, 0x0000);
