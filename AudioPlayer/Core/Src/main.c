@@ -5,9 +5,11 @@
 
 /* USER CODE BEGIN Includes */
 #include "spark_lcd.h"
+#include "spark_audio.h"
 /* USER CODE END Includes */
 
 /* USER CODE BEGIN PV */
+static HAL_StatusTypeDef audioTestResult = HAL_ERROR;
 I2C_HandleTypeDef hi2c2;
 static uint8_t codecDetected = 0;
 UART_HandleTypeDef huart1;
@@ -55,6 +57,11 @@ SparkLCD_Fill(0x0000);
 codecDetected =
     (HAL_I2C_IsDeviceReady(&hi2c2, (0x10U << 1), 3, 100)
      == HAL_OK);
+
+     if (codecDetected)
+{
+    audioTestResult = SparkAudio_TestTone(&hi2c2);
+}
 /* USER CODE END 2 */
 
     lcdMutexHandle = xSemaphoreCreateMutex();
@@ -280,10 +287,18 @@ void StartDisplayTask(void *argument)
                       0xFFFF, 0x0000);
 
         SparkLCD_Text(
-    16, 64,
-    codecDetected ? "Codec: detected" : "Codec: not detected",
-    codecDetected ? 0x07E0 : 0xF800,
-    0x0000);
+            16, 64,
+            codecDetected ? "Codec: detected" : "Codec: not detected",
+            codecDetected ? 0x07E0 : 0xF800,
+            0x0000);
+
+        SparkLCD_Text(
+            16, 88,
+            audioTestResult == HAL_OK
+                ? "Audio test: sent"
+                : "Audio test: failed",
+            audioTestResult == HAL_OK ? 0x07E0 : 0xF800,
+            0x0000);
 
         SparkLCD_Text(16, 104, "Song: 1",
                       0xFFFF, 0x0000);
@@ -303,15 +318,12 @@ void StartDisplayTask(void *argument)
     {
         uint8_t selecting = selectionActive;
 
-        /* Red: ready. */
         HAL_GPIO_WritePin(GPIOF, GPIO_PIN_5,
                           selecting ? GPIO_PIN_RESET : GPIO_PIN_SET);
 
-        /* Green: selecting. */
         HAL_GPIO_WritePin(GPIOF, GPIO_PIN_6,
                           selecting ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
-        /* Blue will be used when playback is implemented. */
         HAL_GPIO_WritePin(GPIOF, GPIO_PIN_7, GPIO_PIN_RESET);
 
         vTaskDelay(pdMS_TO_TICKS(20));
