@@ -251,20 +251,23 @@ void StartDisplayTask(void *argument)
     const char message[] = "AudioPlayer: LCD initialized\r\n";
 
     if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
-    {
-        SparkLCD_Fill(0x001F); /* Blue */
-        xSemaphoreGive(lcdMutexHandle);
-    }
+{
+    SparkLCD_Fill(0x0000); /* Black background */
 
-    HAL_UART_Transmit(&huart1,
-                     (uint8_t *)message,
-                     sizeof(message) - 1,
-                     100);
+    SparkLCD_Text(16, 24, "STM32 AUDIO PLAYER",
+                  0xFFFF, 0x0000);
 
-    for (;;)
-    {
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
+    SparkLCD_Text(16, 64, "LCD text ready",
+                  0x07E0, 0x0000);
+
+    SparkLCD_Text(16, 104, "Song: --",
+                  0xFFFF, 0x0000);
+
+    SparkLCD_Text(16, 136, "Status: Ready",
+                  0xFFFF, 0x0000);
+
+    xSemaphoreGive(lcdMutexHandle);
+}
     /* USER CODE END 5 */
 }
 

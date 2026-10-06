@@ -7,6 +7,8 @@
 
 #include "main.h"
 #include "spark_lcd.h"
+#include "drv_lcd_font.h"
+#include <stddef.h>
 
 #define LCD_COMMAND (*(volatile uint8_t *)0x68000000UL)
 #define LCD_DATA    (*(volatile uint8_t *)0x68040000UL)
@@ -53,7 +55,7 @@ static void configure_bus(void)
     gpio.Pin = GPIO_PIN_10;
     HAL_GPIO_Init(GPIOG, &gpio);
 
-    /* Reset and backlight */
+    /* Reset: PD3; backlight: PF9 */
     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_3, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(GPIOF, GPIO_PIN_9, GPIO_PIN_RESET);
 
@@ -67,6 +69,7 @@ static void configure_bus(void)
 
     lcd_sram.Instance = FSMC_NORSRAM_DEVICE;
     lcd_sram.Extended = FSMC_NORSRAM_EXTENDED_DEVICE;
+
     lcd_sram.Init.NSBank = FSMC_NORSRAM_BANK3;
     lcd_sram.Init.DataAddressMux = FSMC_DATA_ADDRESS_MUX_DISABLE;
     lcd_sram.Init.MemoryType = FSMC_MEMORY_TYPE_SRAM;
@@ -82,7 +85,6 @@ static void configure_bus(void)
     lcd_sram.Init.WriteBurst = FSMC_WRITE_BURST_DISABLE;
     lcd_sram.Init.PageSize = FSMC_PAGE_SIZE_NONE;
 
-    /* Conservative timings for initial bring-up. */
     timing.AddressSetupTime = 15;
     timing.AddressHoldTime = 1;
     timing.DataSetupTime = 60;
@@ -95,6 +97,24 @@ static void configure_bus(void)
     {
         Error_Handler();
     }
+}
+
+static void set_window(uint16_t x1, uint16_t y1,
+                       uint16_t x2, uint16_t y2)
+{
+    command(0x2A);
+    data((uint8_t)(x1 >> 8));
+    data((uint8_t)x1);
+    data((uint8_t)(x2 >> 8));
+    data((uint8_t)x2);
+
+    command(0x2B);
+    data((uint8_t)(y1 >> 8));
+    data((uint8_t)y1);
+    data((uint8_t)(y2 >> 8));
+    data((uint8_t)y2);
+
+    command(0x2C);
 }
 
 void SparkLCD_Init(void)
@@ -121,11 +141,13 @@ void SparkLCD_Init(void)
 
     configure_bus();
 
+    /* Call initialization before starting the scheduler. */
     HAL_Delay(100);
     HAL_GPIO_WritePin(GPIOD, GPIO_PIN_3, GPIO_PIN_SET);
     HAL_Delay(100);
 
     unsigned int index = 0;
+
     while (index < sizeof(sequence))
     {
         command(sequence[index++]);
@@ -144,15 +166,7 @@ void SparkLCD_Init(void)
 
 void SparkLCD_Fill(uint16_t color)
 {
-    command(0x2A); /* Columns 0–239 */
-    data(0); data(0);
-    data(0); data(239);
-
-    command(0x2B); /* Rows 0–239 */
-    data(0); data(0);
-    data(0); data(239);
-
-    command(0x2C);
+    set_window(0, 0, 239, 239);
 
     for (uint32_t pixel = 0; pixel < 240UL * 240UL; pixel++)
     {
@@ -161,4 +175,79 @@ void SparkLCD_Fill(uint16_t color)
     }
 
     HAL_GPIO_WritePin(GPIOF, GPIO_PIN_9, GPIO_PIN_SET);
+}
+
+static void draw_character(uint16_t x, uint16_t y, unsigned char ch,
+                           uint16_t foreground, uint16_t background)
+{
+    if (x > 232 || y > 224)
+    {
+        return;
+    }
+
+    /* Supplied font: ASCII space through '}'. */
+    if (ch < 32 || ch > 125)
+    {
+        ch = '?';
+    }
+
+    const uint8_t *glyph = &asc2_1608[(ch - 32) * 16];
+
+    set_window(x, y, x + 7, y + 15);
+
+    for (uint8_t row = 0; row < 16; row++)
+    {
+        for (uint8_t column = 0; column < 8; column++)
+        {
+            uint16_t color =
+                (glyph[row] & (0x80U >> column))
+                ? foreground : background;
+
+            data((uint8_t)(color >> 8));
+            data((uint8_t)color);
+        }
+    }
+}
+
+void SparkLCD_Text(uint16_t x, uint16_t y, const char *text,
+                   uint16_t foreground, uint16_t background)
+{
+    uint16_t start_x = x;
+
+    if (text == NULL || x > 232 || y > 224)
+    {
+        return;
+    }
+
+    while (*text)
+    {
+        unsigned char ch = (unsigned char)*text++;
+
+        if (ch == '\n')
+        {
+            x = start_x;
+            y += 16;
+        }
+        else
+        {
+            if (x > 232)
+            {
+                x = start_x;
+                y += 16;
+            }
+
+            if (y > 224)
+            {
+                break;
+            }
+
+            draw_character(x, y, ch, foreground, background);
+            x += 8;
+        }
+
+        if (y > 224)
+        {
+            break;
+        }
+    }
 }
