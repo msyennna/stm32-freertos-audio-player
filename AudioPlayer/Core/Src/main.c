@@ -528,6 +528,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
     /* USER CODE END Callback 0 */
 }
 
+void vApplicationIdleHook(void)
+{
+    HAL_PWR_EnterSLEEPMode(
+        PWR_MAINREGULATOR_ON,
+        PWR_SLEEPENTRY_WFI
+    );
+}
+
 void Error_Handler(void)
 {
     /* USER CODE BEGIN Error_Handler_Debug */
