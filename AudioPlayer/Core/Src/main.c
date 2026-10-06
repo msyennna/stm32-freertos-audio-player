@@ -51,9 +51,15 @@ TaskHandle_t ButtonTaskHandle;
 TaskHandle_t VolumeTaskHandle;
 SemaphoreHandle_t lcdMutexHandle;
 /* USER CODE BEGIN PV */
-UART_HandleTypeDef huart1;
-/* USER CODE END PV */
 
+UART_HandleTypeDef huart1;
+
+static uint8_t currentSong = 0;
+static uint8_t pendingSong = 0;
+static uint8_t selectionActive = 0;
+static TickType_t selectionStartTick = 0;
+
+/* USER CODE END PV */
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -300,46 +306,121 @@ void StartDisplayTask(void *argument)
 void StartButtonTask(void *argument)
 {
     /* USER CODE BEGIN StartButtonTask */
-    uint8_t previous = 0xFF;
+    (void)argument;
+
+    uint8_t lastRaw = 0;
+    uint8_t stableButtons = 0;
+    uint8_t displayChanged = 1;
+
+    TickType_t lastChangeTick = xTaskGetTickCount();
 
     for (;;)
     {
-        uint8_t pressed = 0;
+        TickType_t now = xTaskGetTickCount();
+        uint8_t rawButtons = 0;
 
-        /* Read all four inputs together; LOW means pressed. */
+        /* Active-low inputs: pressed = 1. */
         uint32_t inputs = GPIOE->IDR;
 
         for (uint8_t i = 0; i < 4; i++)
         {
             if ((inputs & (GPIO_PIN_2 << i)) == 0)
             {
-                pressed |= (1U << i);
+                rawButtons |= (uint8_t)(1U << i);
             }
         }
 
-        if (pressed != previous)
+        /* Require the reading to remain unchanged for 40 ms. */
+        if (rawButtons != lastRaw)
         {
-            char text[32];
+            lastRaw = rawButtons;
+            lastChangeTick = now;
+        }
 
-            snprintf(text, sizeof(text),
-                     "B1:%u B2:%u B3:%u B4:%u",
-                     (unsigned int)((pressed >> 0) & 1U),
-                     (unsigned int)((pressed >> 1) & 1U),
-                     (unsigned int)((pressed >> 2) & 1U),
-                     (unsigned int)((pressed >> 3) & 1U));
+        /* Expire selection before accepting a late confirmation. */
+        if (selectionActive &&
+            (TickType_t)(now - selectionStartTick) >=
+                pdMS_TO_TICKS(5000))
+        {
+            selectionActive = 0;
+            pendingSong = currentSong;
+            displayChanged = 1;
+        }
 
-            if (xSemaphoreTake(lcdMutexHandle,
-                               portMAX_DELAY) == pdTRUE)
+        if (rawButtons != stableButtons &&
+            (TickType_t)(now - lastChangeTick) >=
+                pdMS_TO_TICKS(40))
+        {
+            uint8_t newlyPressed =
+                (uint8_t)(rawButtons & (uint8_t)~stableButtons);
+
+            stableButtons = rawButtons;
+
+            if (newlyPressed & 0x01U)
             {
-                SparkLCD_Text(16, 184, text,
+                if (!selectionActive)
+                {
+                    selectionActive = 1;
+                    selectionStartTick = now;
+
+                    /* B2, B3, B4 represent bits 0, 1, 2. */
+                    pendingSong =
+                        (uint8_t)((stableButtons >> 1) & 0x07U);
+                }
+                else
+                {
+                    pendingSong =
+                        (uint8_t)((stableButtons >> 1) & 0x07U);
+
+                    currentSong = pendingSong;
+                    selectionActive = 0;
+                }
+
+                displayChanged = 1;
+            }
+            else if (selectionActive)
+            {
+                pendingSong =
+                    (uint8_t)((stableButtons >> 1) & 0x07U);
+
+                displayChanged = 1;
+            }
+        }
+
+        if (displayChanged)
+        {
+            char songText[] = "Song: 1             ";
+            char choiceText[] = "Choice: 1           ";
+
+            songText[6] = (char)('1' + currentSong);
+            choiceText[8] = (char)('1' + pendingSong);
+
+            if (xSemaphoreTake(lcdMutexHandle, portMAX_DELAY) == pdTRUE)
+            {
+                SparkLCD_Text(16, 104, songText,
                               0xFFFF, 0x0000);
+
+                SparkLCD_Text(
+                    16, 136,
+                    selectionActive
+                        ? "Status: Selecting   "
+                        : "Status: Ready       ",
+                    0xFFFF, 0x0000);
+
+                SparkLCD_Text(
+                    16, 184,
+                    selectionActive
+                        ? choiceText
+                        : "                    ",
+                    0xFFFF, 0x0000);
+
                 xSemaphoreGive(lcdMutexHandle);
             }
 
-            previous = pressed;
+            displayChanged = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
     /* USER CODE END StartButtonTask */
 }
