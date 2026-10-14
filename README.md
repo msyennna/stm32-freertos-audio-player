@@ -223,15 +223,3 @@ The repository does not currently contain automated application test cases; the 
 - UART startup instructions appear at 115200 baud
 - Audio continues without DMA/I2S faults
 
-## Documentation Contribution
-
-This project was completed as a pair activity.
-
-| Contributor | Contribution |
-| --- | --- |
-| `@msyennna` / [Partner's full name] | Firmware and hardware implementation |
-| Shanice Reih H. Tanque | README documentation and laboratory report |
-
-## Repository
-
-Original project repository: <https://github.com/msyennna/stm32-freertos-audio-player>
